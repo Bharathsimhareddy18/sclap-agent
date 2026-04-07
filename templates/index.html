@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ScalpAgent</title>
+</head>
+<body>
+
+<header>
+  <div>
+    <span id="status-dot">●</span>
+    <h1 style="display:inline">ScalpAgent</h1>
+    &nbsp;&nbsp;
+    <span>PAPER TRADING · 5-MIN CYCLE · LANGCHAIN</span>
+  </div>
+  <div>
+    <span id="next-cycle">Next cycle in: --:--</span>
+    &nbsp;&nbsp;
+    <button id="force-btn" onclick="forceCycle()">▶ Force Cycle</button>
+  </div>
+</header>
+
+<hr>
+
+<main>
+  <div id="stats-row">
+    <table border="1" cellpadding="6" cellspacing="0">
+      <tr>
+        <th>Total Trades</th>
+        <th>Buys</th>
+        <th>Sells</th>
+        <th>Holds</th>
+        <th>Cash Balance</th>
+        <th>Realized P&amp;L</th>
+      </tr>
+      <tr>
+        <td id="s-total">--</td>
+        <td id="s-buys">--</td>
+        <td id="s-sells">--</td>
+        <td id="s-holds">--</td>
+        <td id="s-cash">--</td>
+        <td id="s-pnl">--</td>
+      </tr>
+    </table>
+  </div>
+
+  <br>
+
+  <div>
+    <h3>Recent Trades</h3>
+    <table border="1" cellpadding="6" cellspacing="0">
+      <thead>
+        <tr>
+          <th>Ticker</th>
+          <th>Action</th>
+          <th>Price (USD)</th>
+          <th>Qty</th>
+          <th>Value (₹)</th>
+          <th>Strategy</th>
+          <th>Reasoning</th>
+          <th>Time</th>
+        </tr>
+      </thead>
+      <tbody id="trades-tbody">
+        <tr><td colspan="8">Waiting for first cycle...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <br>
+
+  <div>
+    <h3>Agent Log</h3>
+    <table border="1" cellpadding="6" cellspacing="0">
+      <thead>
+        <tr>
+          <th>Level</th>
+          <th>Message</th>
+          <th>Time</th>
+        </tr>
+      </thead>
+      <tbody id="log-tbody">
+        <tr><td colspan="3">No logs yet...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+  const USD_TO_INR = 83.5;
+  let nextCycleAt = Date.now() + 300000;
+
+  function fmtTime(iso) {
+    if (!iso) return '--';
+    return new Date(iso).toLocaleTimeString();
+  }
+
+  function fmtCountdown(ms) {
+    if (ms <= 0) return '00:00';
+    const m = Math.floor(ms / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+    return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  }
+
+  function fmtINR(val) {
+    return '₹' + val.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+  }
+
+  async function fetchTrades() {
+    const res = await fetch('/api/trades?limit=40');
+    const trades = await res.json();
+    const tbody = document.getElementById('trades-tbody');
+    if (!trades.length) return;
+
+    tbody.innerHTML = trades.map(t => {
+      const valueINR = t.price && t.quantity ? (t.price * t.quantity * USD_TO_INR) : 0;
+      return `
+        <tr>
+          <td><b>${t.ticker}</b></td>
+          <td>${t.action}</td>
+          <td>$${t.price ? t.price.toFixed(3) : '--'}</td>
+          <td>${t.quantity}</td>
+          <td>${t.action !== 'HOLD' && valueINR ? fmtINR(valueINR) : '--'}</td>
+          <td>${t.strategy}</td>
+          <td title="${t.reasoning}">${t.reasoning ? t.reasoning.substring(0, 60) + '...' : '--'}</td>
+          <td>${fmtTime(t.timestamp)}</td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  async function fetchLogs() {
+    const res = await fetch('/api/logs?limit=25');
+    const logs = await res.json();
+    const tbody = document.getElementById('log-tbody');
+    if (!logs.length) return;
+    tbody.innerHTML = logs.map(l => `
+      <tr>
+        <td>${l.level}</td>
+        <td>${l.message}</td>
+        <td>${fmtTime(l.timestamp)}</td>
+      </tr>
+    `).join('');
+  }
+
+  async function fetchStats() {
+    const res = await fetch('/api/stats');
+    const s = await res.json();
+    
+    document.getElementById('s-total').textContent = s.total;
+    document.getElementById('s-buys').textContent  = s.buys;
+    document.getElementById('s-sells').textContent = s.sells;
+    document.getElementById('s-holds').textContent = s.holds;
+    document.getElementById('s-cash').textContent = fmtINR(s.current_cash);
+    document.getElementById('s-pnl').textContent = (s.pnl >= 0 ? '+' : '') + fmtINR(s.pnl);
+  }
+
+  async function forceCycle() {
+    const btn = document.getElementById('force-btn');
+    btn.textContent = '... Running';
+    btn.disabled = true;
+    await fetch('/api/force_cycle', { method: 'POST' });
+    nextCycleAt = Date.now() + 300000;
+    setTimeout(() => {
+      btn.textContent = '▶ Force Cycle';
+      btn.disabled = false;
+      refresh();
+    }, 3000);
+  }
+
+  function refresh() {
+    fetchTrades();
+    fetchLogs();
+    fetchStats();
+  }
+
+  setInterval(() => {
+    const remaining = nextCycleAt - Date.now();
+    document.getElementById('next-cycle').textContent =
+      remaining > 0 ? `Next cycle in: ${fmtCountdown(remaining)}` : 'Running...';
+    if (remaining <= 0) nextCycleAt = Date.now() + 300000;
+  }, 1000);
+
+  refresh();
+  setInterval(refresh, 10000);
+</script>
+</body>
+</html>
